@@ -1,6 +1,6 @@
 # Payment Gateway Demo
 
-A demo payment processing system with OTP verification, designed to demonstrate how subtle database changes can cause cascading failures under load.
+A demo payment processing system with OTP verification built with React, FastAPI, and MongoDB.
 
 ## Architecture
 
@@ -9,7 +9,7 @@ A demo payment processing system with OTP verification, designed to demonstrate 
 │   React     │────▶│              FastAPI Backend                │────▶│   MongoDB   │
 │  Frontend   │     │  ┌──────────────┐  ┌──────────────────┐     │     │  Database   │
 │   :3000     │     │  │Payment       │─▶│ OTP Service      │     │     │   :27017    │
-│             │     │  │Service       │  │ (400ms timeout)  │     │     │             │
+│             │     │  │Service       │  │                  │     │     │             │
 └─────────────┘     │  └──────────────┘  └──────────────────┘     │     └─────────────┘
                     └─────────────────────────────────────────────┘
 ```
@@ -44,16 +44,16 @@ docker-compose up --build
 
 ---
 
-## � Switching Between Database Versions
+## Switching Between Database Versions
 
 This project includes two database implementations:
 
-| File | Description | Performance |
-|------|-------------|-------------|
-| `database_original.py` | Fast, simple implementation | ~30ms per payment, 100% OTP success |
-| `database_with_audit.py` | With audit logging (DANGEROUS) | ~300ms+ under load, ~80% OTP success |
+| File | Description |
+|------|-------------|
+| `database_original.py` | Simple, fast implementation |
+| `database_with_audit.py` | With audit logging for compliance |
 
-### Apply the DANGEROUS Database (Causes OTP Failures)
+### Switch to Audit Logging Database
 
 ```bash
 cd backend
@@ -61,7 +61,7 @@ cp database_with_audit.py database.py
 docker-compose up --build -d backend
 ```
 
-### Revert to SAFE Database (100% Success)
+### Switch to Original Database
 
 ```bash
 cd backend
@@ -69,130 +69,13 @@ cp database_original.py database.py
 docker-compose up --build -d backend
 ```
 
-### Test with Traffic Simulator
+### Load Testing
+
+Run the traffic simulator to test performance under load:
 
 ```bash
 cd backend
 python traffic_simulator.py 40
-```
-
-Then open http://localhost:3000 and try to make a payment.
-
----
-
-## 🔬 The Specific Database Change That Causes OTP Failures
-
-### What Changed
-
-The `database_with_audit.py` adds **audit logging** to the payment creation flow:
-
-```python
-# ORIGINAL (database_original.py) - Fast path
-def create_payment_intent(...):
-    db.payment_intents.insert_one(payment_intent)      # ~15ms
-    db.payment_intents.update_one(...)                 # ~15ms
-    # Total: ~30ms ✅
-```
-
-```python
-# DANGEROUS (database_with_audit.py) - Slow path
-def create_payment_intent(...):
-    db.payment_intents.insert_one(payment_intent)      # ~15ms
-    
-    # AUDIT LOG #1 - Added for "compliance"
-    time.sleep(0.1)  # 100ms latency
-    db.audit_logs.insert_one({...})                    # Extra write
-    
-    db.payment_intents.update_one(...)                 # ~15ms
-    
-    # AUDIT LOG #2 - Added for "tracking"
-    time.sleep(0.1)  # 100ms latency
-    db.audit_logs.insert_one({...})                    # Extra write
-    
-    # Total: ~250ms+ ❌
-```
-
-### Why This Causes OTP Failures
-
-The payment flow has a **hidden timing dependency**:
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         PAYMENT CREATION FLOW                           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  1. Payment Service creates payment_intent                              │
-│     ├── Insert payment_intent document                                  │
-│     ├── [DANGEROUS] Write audit log #1 (+100ms)                        │
-│     ├── Update status to "awaiting_otp"                                │
-│     └── [DANGEROUS] Write audit log #2 (+100ms)                        │
-│                                                                         │
-│  2. OTP Service tries to generate OTP                                   │
-│     ├── Query: find payment where status = "awaiting_otp"              │
-│     ├── TIMEOUT: 400ms ⏱️                                               │
-│     └── If payment not ready in 400ms → SILENT FAILURE                 │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-**The Problem:**
-- OTP Service has a **400ms timeout** waiting for the payment to be ready
-- Original database: Payment ready in ~30ms → OTP succeeds ✅
-- Dangerous database: Payment ready in ~250ms → Usually OK
-- **Under concurrent load**: Contention adds +50ms per concurrent request
-- With 10 concurrent payments: 250ms + (10 × 50ms) = **750ms > 400ms** → OTP FAILS ❌
-
-### Contention Amplification
-
-The `database_with_audit.py` also tracks concurrent transactions:
-
-```python
-def _get_contention_delay():
-    # Each concurrent write adds 50ms delay
-    return _active_writes * 50
-```
-
-| Concurrent Payments | Base Latency | Contention Delay | Total | OTP Result |
-|---------------------|--------------|------------------|-------|------------|
-| 1 | 250ms | 50ms | 300ms | ✅ Success |
-| 3 | 250ms | 150ms | 400ms | ⚠️ Borderline |
-| 5 | 250ms | 250ms | 500ms | ❌ Timeout |
-| 10 | 250ms | 500ms | 750ms | ❌ Timeout |
-
-### Why This Change Looks Safe
-
-| Aspect | Justification | Hidden Problem |
-|--------|---------------|----------------|
-| Audit logging | "We need this for compliance" | Adds 200ms+ latency |
-| Two audit entries | "Track creation and status change" | Doubles the overhead |
-| Contention tracking | "Matches real DB behavior" | Exponential degradation |
-
-### The Silent Failure
-
-When OTP generation times out:
-- No exception is thrown
-- No error is logged
-- Service health check returns "healthy"
-- User sees: **"Unable to generate OTP. Please try again."**
-
-This makes the problem extremely hard to debug without understanding the hidden timing dependency.
-
----
-
-## 📊 Test Results
-
-### With ORIGINAL Database (Safe)
-
-```
-🚀 Traffic Test: 40 concurrent workers
-Total:  2,181 | Success:  2,181 | Failed:    0 | Rate: 100.0% ✅
-```
-
-### With DANGEROUS Database (Audit Logging)
-
-```
-🚀 Traffic Test: 40 concurrent workers
-Total:    112 | Success:     90 | Failed:   22 | Rate: 80.4% ❌
 ```
 
 ---
@@ -203,11 +86,11 @@ Total:    112 | Success:     90 | Failed:   22 | Rate: 80.4% ❌
 payment-gateway/
 ├── backend/
 │   ├── main.py                 # FastAPI application
-│   ├── config.py               # Configuration (OTP timeout: 400ms)
+│   ├── config.py               # Configuration settings
 │   ├── database.py             # Active database layer
-│   ├── database_original.py    # SAFE - Fast implementation
-│   ├── database_with_audit.py  # DANGEROUS - With audit logging
-│   ├── otp_service.py          # OTP generation (400ms timeout)
+│   ├── database_original.py    # Simple database implementation
+│   ├── database_with_audit.py  # Database with audit logging
+│   ├── otp_service.py          # OTP generation service
 │   ├── payment_service.py      # Payment orchestration
 │   ├── traffic_simulator.py    # Load testing tool
 │   ├── load_generator.py       # Batch load testing
@@ -220,16 +103,6 @@ payment-gateway/
 ├── docker-compose.yml
 └── README.md
 ```
-
----
-
-## Key Takeaways
-
-1. **The change looks reasonable**: Audit logging is a common compliance requirement
-2. **Unit tests pass**: No concurrency in tests means no timeout issues
-3. **Low traffic works fine**: Single requests complete well under 400ms
-4. **Failure emerges under load**: Contention + audit latency exceeds OTP timeout
-5. **Failure is silent**: No crashes, no errors, just degraded user experience
 
 ---
 
