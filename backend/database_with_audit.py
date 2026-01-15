@@ -1,12 +1,4 @@
-"""
-Database Layer - DANGEROUS VERSION
-===================================
 
-This version simulates a problematic DB change that causes OTP failures.
-
-The issue: Payment creation is BLOCKED while audit logs are written,
-causing the OTP service (which has a 400ms timeout) to fail.
-"""
 import time
 import uuid
 import threading
@@ -16,7 +8,6 @@ from pymongo import MongoClient
 
 from config import MONGO_URI, DATABASE_NAME
 
-# Global lock to simulate database contention
 _db_lock = threading.Lock()
 _active_writes = 0
 _writes_lock = threading.Lock()
@@ -59,10 +50,10 @@ def _end_write():
 
 
 def _get_contention_delay():
-    """More concurrent writes = more delay"""
+    
     global _active_writes
     with _writes_lock:
-        # Each concurrent write adds 50ms delay
+        
         return _active_writes * 50
 
 
@@ -73,14 +64,7 @@ def create_payment_intent(
     card_last_four: str,
     holder_name: str
 ) -> Dict[str, Any]:
-    """
-    Create payment intent with audit logging.
     
-    THE PROBLEM:
-    - Audit logging adds 200ms+ delay
-    - Under concurrent load, delays compound
-    - OTP service times out waiting for this to complete
-    """
     db = get_db()
     
     payment_id = str(uuid.uuid4())
@@ -99,8 +83,7 @@ def create_payment_intent(
     
     concurrent = _start_write()
     try:
-        # === THE DANGEROUS PART ===
-        # Contention delay: scales with concurrent requests
+       
         contention_delay = _get_contention_delay()
         if contention_delay > 0:
             time.sleep(contention_delay / 1000.0)
@@ -108,7 +91,7 @@ def create_payment_intent(
         # Insert payment
         db.payment_intents.insert_one(payment_intent)
         
-        # Audit log #1: 100ms write
+       
         time.sleep(0.1)
         db.audit_logs.insert_one({
             "_id": str(uuid.uuid4()),
@@ -117,7 +100,7 @@ def create_payment_intent(
             "timestamp": datetime.utcnow()
         })
         
-        # Update status (another DB operation)
+        
         time.sleep(0.05)
         db.payment_intents.update_one(
             {"_id": payment_id},
@@ -125,7 +108,7 @@ def create_payment_intent(
         )
         payment_intent["status"] = "awaiting_otp"
         
-        # Audit log #2: another 100ms
+        
         time.sleep(0.1)
         db.audit_logs.insert_one({
             "_id": str(uuid.uuid4()),
@@ -133,7 +116,7 @@ def create_payment_intent(
             "action": "status_changed",
             "timestamp": datetime.utcnow()
         })
-        # === END DANGEROUS PART ===
+        
         
     finally:
         _end_write()
@@ -142,12 +125,7 @@ def create_payment_intent(
 
 
 def get_payment_intent(payment_id: str, timeout_ms: int = 400) -> Optional[Dict[str, Any]]:
-    """
-    Get payment intent with timeout.
-    
-    CRITICAL: Returns None if timeout exceeded!
-    This causes OTP generation to fail silently.
-    """
+   
     db = get_db()
     start = time.time()
     
@@ -160,7 +138,7 @@ def get_payment_intent(payment_id: str, timeout_ms: int = 400) -> Optional[Dict[
             return payment
         time.sleep(0.01)
     
-    # TIMEOUT! This causes OTP failure
+   
     return None
 
 
