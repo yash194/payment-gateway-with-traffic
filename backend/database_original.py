@@ -17,13 +17,13 @@ from config import (
     CONTENTION_FACTOR
 )
 
-# Thread-safe counter for active transactions
+
 _active_transactions = 0
 _transaction_lock = threading.Lock()
 
 
 class DatabaseConnection:
-    """Singleton database connection manager"""
+  
     _instance = None
     _client = None
     _db = None
@@ -55,16 +55,13 @@ def get_client():
 
 
 def _simulate_write_latency():
-    """
-    Simulate realistic write latency that increases with contention.
-    This models real-world behavior where concurrent writes slow each other.
-    """
+   
     global _active_transactions
     
     with _transaction_lock:
         concurrent = _active_transactions
     
-    # Latency increases with concurrent transactions
+    
     latency_ms = BASE_WRITE_LATENCY_MS * (1 + concurrent * CONTENTION_FACTOR * 0.1)
     time.sleep(latency_ms / 1000.0)
 
@@ -90,13 +87,7 @@ def create_payment_intent(
     card_last_four: str,
     holder_name: str
 ) -> Dict[str, Any]:
-    """
-    Create a payment intent in the database.
-    
-    This is the FAST path - simple insert without transaction overhead.
-    
-    Returns the created payment intent document.
-    """
+ 
     db = get_db()
     
     payment_intent = {
@@ -108,7 +99,7 @@ def create_payment_intent(
         "holder_name": holder_name,
         "status": "pending",
         "created_at": datetime.utcnow(),
-        "committed_at": None  # Will be set when OTP is verified
+        "committed_at": None  
     }
     
     _track_transaction_start()
@@ -116,7 +107,7 @@ def create_payment_intent(
         _simulate_write_latency()
         db.payment_intents.insert_one(payment_intent)
         
-        # Mark as ready for OTP generation
+        
         payment_intent["status"] = "awaiting_otp"
         db.payment_intents.update_one(
             {"_id": payment_intent["_id"]},
@@ -140,12 +131,11 @@ def get_payment_intent(payment_id: str, timeout_ms: int = 400) -> Optional[Dict[
     db = get_db()
     start_time = time.time()
     
-    # Wait for payment to be in 'awaiting_otp' status
-    # This creates a hidden dependency on the payment commit completing
+    
     while True:
         elapsed_ms = (time.time() - start_time) * 1000
         if elapsed_ms > timeout_ms:
-            return None  # Timeout - silent failure
+            return None  
         
         payment = db.payment_intents.find_one({
             "_id": payment_id,
@@ -155,7 +145,7 @@ def get_payment_intent(payment_id: str, timeout_ms: int = 400) -> Optional[Dict[
         if payment:
             return payment
         
-        # Small sleep to avoid tight polling
+        
         time.sleep(0.01)
 
 
@@ -164,9 +154,7 @@ def create_otp_session(
     otp_code: str,
     expiry_time: datetime
 ) -> Dict[str, Any]:
-    """
-    Create an OTP session linked to a payment intent.
-    """
+   
     db = get_db()
     
     session = {
